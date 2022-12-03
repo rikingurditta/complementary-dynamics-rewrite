@@ -53,7 +53,7 @@ void complementary_displacement(const Eigen::MatrixXd &V,
     Eigen::VectorXd b = Eigen::VectorXd::Zero(n * 3 + m);
     b.head(n * 3) = -K * ur - M * ((ur - u_prev) / dt - du_prev) / dt;
 
-    Eigen::ConjugateGradient<Eigen::SparseMatrixd> solver(A);
+    Eigen::SimplicialLDLT<Eigen::SparseMatrixd> solver(A);
     Eigen::VectorXd sol = solver.solve(b);
     uc = sol.head(n * 3);
 }
