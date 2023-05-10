@@ -22,6 +22,7 @@ void cd_precompute(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, const Eig
 
     Eigen::MatrixXd MTJ = M.transpose() * J;
 
+    // see eqn (11) in paper
     Eigen::SparseMatrixd A(n * 3 + m, n * 3 + m);
     // A = [K + M/dt^2    M^T J
     //      (M^T J)^T     0     ]
@@ -61,6 +62,7 @@ complementary_displacement(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, c
     K.setIdentity();
     K *= k;
 
+    // see eqn (11) in paper
     Eigen::VectorXd b = Eigen::VectorXd::Zero(n * 3 + m);
     b.head(n * 3) = -K * ur - M * ((ur - u_prev) / dt - du_prev) / dt + ft;
 

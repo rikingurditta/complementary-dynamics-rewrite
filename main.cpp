@@ -24,21 +24,27 @@ Eigen::MatrixXd unflatten(const Eigen::VectorXd &v, int dim) {
 }
 
 int main(int argc, char *argv[]) {
+
+    // constants
+    double dt = 0.1;
+    double k = 100; // stiffness
+    double g = -9.8; // acceleration due to gravity
+
     // load tet mesh
     Eigen::MatrixXd V;
     Eigen::MatrixXi T;
     Eigen::MatrixXi F;
     igl::readMESH("../examples/fish/fish.mesh", V, T, F);
+    long n = V.rows();
     igl::boundary_facets(T, F);
     // boundary_facets returns inside out surface, so reverse direction of every face to turn the correct side outward
     Eigen::VectorXi temp = F.col(0);
     F.col(0) = F.col(1);
     F.col(1) = temp;
 
-    double k = 100; // stiffness
-    double g = -9.8; // acceleration due to gravity
-
-    long n = V.rows();
+    // mass matrix
+    Eigen::SparseMatrixd M(n * 3, n * 3);
+    M.setIdentity();
 
     // blend shapes
     // columns of J are blend shapes, J itself is the rig jacobian
@@ -46,6 +52,8 @@ int main(int argc, char *argv[]) {
     Eigen::VectorXd b0 = flatten(V);
     J.col(0) = b0;
 
+    // create "direction" vector for each vertex
+    // to displace them along disp_axis based on how far they are along query_axis
     Eigen::VectorXd disp = Eigen::VectorXd::Zero(n * 3);
     int query_axis = 2;
     int disp_axis = 1;
@@ -62,52 +70,45 @@ int main(int argc, char *argv[]) {
     J.col(2) = b0;
     J.col(3) = b0 + disp;
 
-    double dt = 0.1;
-
-    // Plot the mesh
-    igl::opengl::glfw::Viewer viewer;
-
-    Eigen::SparseMatrixd M(n * 3, n * 3);
-    M.setIdentity();
-
     Eigen::VectorXd u_prev_prev = Eigen::VectorXd::Zero(n * 3);
     Eigen::VectorXd u_prev = Eigen::VectorXd::Zero(n * 3);
     Eigen::VectorXd du_prev = Eigen::VectorXd::Zero(n * 3);
 
+    Eigen::SimplicialLDLT<Eigen::SparseMatrixd> solver;
+    cd_precompute(V, T, M, k, J, dt, solver);
+
+    // view animation
     bool only_visualize_complementary = false;
     int frame = 0;
     int num_frames = 48;
 
-    Eigen::SimplicialLDLT<Eigen::SparseMatrixd> solver;
-    cd_precompute(V, T, M, k, J, dt, solver);
+    igl::opengl::glfw::Viewer viewer;
     viewer.callback_pre_draw = [&](igl::opengl::glfw::Viewer &) -> bool {
         if (viewer.core().is_animating) {
             // get rig deformation using blend shapes
             Eigen::Vector4d mix;
             double t = frame * 3. / num_frames;
             std::cout << "t " << t << "\n";
+            // animation blends from 0 to 1, then 1 to 2, then 2 to 3
             if (t < 1)
                 mix << 1 - t, t, 0, 0;
             else if (t < 2)
                 mix << 0, 1 - (t - 1), t - 1, 0;
             else
                 mix << 0, 0, 1 - (t - 2), t - 2;
+
+            // rig displacement is current blend shape minus rest shape
             Eigen::VectorXd ur = J * mix - flatten(V);
 
+            // apply external impulse to certain vertices at beginning of animation
             Eigen::VectorXd ft = Eigen::VectorXd::Zero(n * 3);
-            std::list<int> vertices {300};
+            std::list<int> vertices{300};
             double f0 = 10000;
             if (t == 0) {
-                for (int v : vertices) {
-//                    ft(v * 3 + 0) = f0;
-//                    ft(v * 3 + 1) = f0;
-//                    ft(v * 3 + 2) = f0;
+                for (int v: vertices) {
                     ft(v * 3 + disp_axis) = f0;
                 }
             }
-//            for (int v = 0; v < n; v++) {
-//                ft(v * 3 + disp_axis) = g;
-//            }
 
             // get complementary displacement
             Eigen::VectorXd uc = Eigen::VectorXd::Zero(ur.size());
@@ -147,17 +148,11 @@ int main(int argc, char *argv[]) {
         return false;
     };
 
-    viewer.data().set_mesh(V, F);
     viewer.core().is_animating = false;
     viewer.core().animation_max_fps = 16.;
     viewer.data().show_lines = false;
     viewer.data().show_overlay_depth = false;
     viewer.data().set_mesh(V, F);
-
-    // colour based on bones - will need to change this when we have more than 2 bones
-//    Eigen::MatrixXd C;
-//    igl::parula(weights.col(0), true, C);
-//    viewer.data().set_colors(C);
 
     viewer.launch();
 
