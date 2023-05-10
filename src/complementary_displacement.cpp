@@ -1,21 +1,15 @@
 #include <iostream>
 #include "complementary_displacement.h"
 
-void complementary_displacement(const Eigen::MatrixXd &V,
-                                const Eigen::MatrixXi &T,
-                                const Eigen::SparseMatrixd &M,
-                                const Eigen::VectorXd &ur,
-                                const Eigen::VectorXd &u_prev,
-                                const Eigen::VectorXd &du_prev,
-                                const Eigen::MatrixXd &J,
-                                double dt,
-                                Eigen::VectorXd &uc) {
+void cd_precompute(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, const Eigen::SparseMatrixd &M, double k,
+                   const Eigen::MatrixXd &J, double dt, Eigen::SimplicialLDLT<Eigen::SparseMatrixd> &solver) {
     long n = V.rows();
     long m = J.cols();
 
     // use linear elasticity
     Eigen::SparseMatrixd K(n * 3, n * 3);
     K.setIdentity();
+    K *= k;
     auto f = [=](const Eigen::VectorXd &u, const Eigen::SparseMatrixd &K) {
         return 0.5 * u.transpose() * K * u;
     };
@@ -50,10 +44,26 @@ void complementary_displacement(const Eigen::MatrixXd &V,
     }
     A.setFromTriplets(tl.begin(), tl.end());
 
-    Eigen::VectorXd b = Eigen::VectorXd::Zero(n * 3 + m);
-    b.head(n * 3) = -K * ur - M * ((ur - u_prev) / dt - du_prev) / dt;
+    solver.compute(A);
+}
 
-    Eigen::SimplicialLDLT<Eigen::SparseMatrixd> solver(A);
+
+void
+complementary_displacement(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, const Eigen::SparseMatrixd &M, double k,
+                           const Eigen::VectorXd &ur, const Eigen::VectorXd &u_prev, const Eigen::VectorXd &du_prev,
+                           const Eigen::MatrixXd &J, const Eigen::VectorXd &ft, double dt,
+                           Eigen::SimplicialLDLT<Eigen::SparseMatrixd> &solver, Eigen::VectorXd &uc) {
+    long n = V.rows();
+    long m = J.cols();
+
+    // use linear elasticity
+    Eigen::SparseMatrixd K(n * 3, n * 3);
+    K.setIdentity();
+    K *= k;
+
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(n * 3 + m);
+    b.head(n * 3) = -K * ur - M * ((ur - u_prev) / dt - du_prev) / dt + ft;
+
     Eigen::VectorXd sol = solver.solve(b);
     uc = sol.head(n * 3);
 }

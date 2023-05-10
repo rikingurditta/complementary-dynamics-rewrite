@@ -35,6 +35,9 @@ int main(int argc, char *argv[]) {
     F.col(0) = F.col(1);
     F.col(1) = temp;
 
+    double k = 100; // stiffness
+    double g = -9.8; // acceleration due to gravity
+
     long n = V.rows();
 
     // blend shapes
@@ -42,26 +45,18 @@ int main(int argc, char *argv[]) {
     Eigen::MatrixXd J = Eigen::MatrixXd::Zero(n * 3, 4);
     Eigen::VectorXd b0 = flatten(V);
     J.col(0) = b0;
-//    J.col(1) = b0 + Eigen::VectorXd::Ones(n * 3);
-//    Eigen::VectorXd disp2(n * 3);
-//    for (int i = 0; i < n; i++) {
-//        disp2(i * 3 + 0) = 1;
-//        disp2(i * 3 + 1) = -1;
-//        disp2(i * 3 + 2) = 0;
-//    }
-//    J.col(2) = b0 - disp2 * 3;
-//    J.col(3) = J.col(1) + (disp2 - Eigen::VectorXd::Ones(n * 3)) * 4;
 
     Eigen::VectorXd disp = Eigen::VectorXd::Zero(n * 3);
-    int query_coord = 2;
-    int disp_coord = 1;
-    double min_coord = V(0, query_coord);
+    int query_axis = 2;
+    int disp_axis = 1;
+    double min_coord = V(0, query_axis);
     for (int i = 0; i < n; i++) {
-        if (V(i, query_coord) < min_coord)
-            min_coord = V(i, query_coord);
+        if (V(i, query_axis) < min_coord)
+            min_coord = V(i, query_axis);
     }
+    // points that are further on query_axis get displaced more
     for (int i = 0; i < n; i++) {
-        disp(i * 3 + disp_coord) = V(i, query_coord) - min_coord;
+        disp(i * 3 + disp_axis) = V(i, query_axis) - min_coord;
     }
     J.col(1) = b0 + disp * 2;
     J.col(2) = b0;
@@ -82,6 +77,9 @@ int main(int argc, char *argv[]) {
     bool only_visualize_complementary = false;
     int frame = 0;
     int num_frames = 48;
+
+    Eigen::SimplicialLDLT<Eigen::SparseMatrixd> solver;
+    cd_precompute(V, T, M, k, J, dt, solver);
     viewer.callback_pre_draw = [&](igl::opengl::glfw::Viewer &) -> bool {
         if (viewer.core().is_animating) {
             // get rig deformation using blend shapes
@@ -96,9 +94,24 @@ int main(int argc, char *argv[]) {
                 mix << 0, 0, 1 - (t - 2), t - 2;
             Eigen::VectorXd ur = J * mix - flatten(V);
 
+            Eigen::VectorXd ft = Eigen::VectorXd::Zero(n * 3);
+            std::list<int> vertices {300};
+            double f0 = 10000;
+            if (t == 0) {
+                for (int v : vertices) {
+//                    ft(v * 3 + 0) = f0;
+//                    ft(v * 3 + 1) = f0;
+//                    ft(v * 3 + 2) = f0;
+                    ft(v * 3 + disp_axis) = f0;
+                }
+            }
+//            for (int v = 0; v < n; v++) {
+//                ft(v * 3 + disp_axis) = g;
+//            }
+
             // get complementary displacement
-            Eigen::VectorXd uc;
-            complementary_displacement(V, T, M, ur, u_prev, du_prev, J, dt, uc);
+            Eigen::VectorXd uc = Eigen::VectorXd::Zero(ur.size());
+            complementary_displacement(V, T, M, k, ur, u_prev, du_prev, J, ft, dt, solver, uc);
             u_prev_prev = u_prev;
             u_prev = ur + uc;
             du_prev = (u_prev - u_prev_prev) / dt;
