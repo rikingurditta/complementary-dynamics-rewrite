@@ -1,5 +1,6 @@
 #include <iostream>
 #include "complementary_displacement.h"
+#include "igl/boundary_facets.h"
 
 void cd_precompute(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, const Eigen::SparseMatrixd &M, double k,
                    const Eigen::MatrixXd &J, double dt, Eigen::SimplicialLDLT<Eigen::SparseMatrixd> &solver) {
@@ -20,12 +21,22 @@ void cd_precompute(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, const Eig
         Hess = K;
     };
 
-    Eigen::MatrixXd MTJ = M.transpose() * J;
+    Eigen::MatrixXi F;
+    igl::boundary_facets(T, F);
+    Eigen::VectorXd d = Eigen::VectorXd::Ones(n * 3);
+    for (int i = 0; i < F.rows(); i++) {
+        for (int j = 0; j < F.cols(); j++) {
+            int v = F(i, j);
+            d.segment<3>(v * 3) << 0, 0, 0;
+        }
+    }
+
+    Eigen::MatrixXd MTJ = d.asDiagonal() * M.transpose() * J;
 
     // see eqn (11) in paper
     Eigen::SparseMatrixd A(n * 3 + m, n * 3 + m);
     // A = [K + M/dt^2    M^T J
-    //      (M^T J)^T     0     ]
+    //        J^T M         0  ]
     std::vector<Eigen::Triplet<double>> tl;
     for (int i = 0; i < K.outerSize(); i++) {
         for (Eigen::SparseMatrixd::InnerIterator it(K, i); it; ++it) {
@@ -64,7 +75,7 @@ complementary_displacement(const Eigen::MatrixXd &V, const Eigen::MatrixXi &T, c
 
     // see eqn (11) in paper
     Eigen::VectorXd b = Eigen::VectorXd::Zero(n * 3 + m);
-    b.head(n * 3) = -K * ur - M * ((ur - u_prev) / dt - du_prev) / dt + ft;
+    b.head(n * 3) = -K * ur - M / dt * ((ur - u_prev) / dt - du_prev) + ft;
 
     Eigen::VectorXd sol = solver.solve(b);
     uc = sol.head(n * 3);

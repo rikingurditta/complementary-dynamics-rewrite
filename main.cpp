@@ -4,6 +4,7 @@
 #include "igl/bounding_box.h"
 #include "complementary_displacement.h"
 #include "igl/parula.h"
+#include "lbs_rig_jacobian.h"
 
 Eigen::VectorXd flatten(const Eigen::MatrixXd &V) {
     long rows = V.rows(), cols = V.cols();
@@ -46,29 +47,44 @@ int main(int argc, char *argv[]) {
     Eigen::SparseMatrixd M(n * 3, n * 3);
     M.setIdentity();
 
-    // blend shapes
-    // columns of J are blend shapes, J itself is the rig jacobian
-    Eigen::MatrixXd J = Eigen::MatrixXd::Zero(n * 3, 4);
-    Eigen::VectorXd b0 = flatten(V);
-    J.col(0) = b0;
+    // linear blend skinning
+    Eigen::MatrixXd bones(2, 3);
+    bones << 0, 2, -3,
+            0, 0, 1;
+    Eigen::MatrixXd weights(n, 2);
+    for (int i = 0; i < n; i++) {
+        weights(i, 0) = 100 / (V.row(i) - bones.row(0)).squaredNorm();
+        weights(i, 1) = 100 / (V.row(i) - bones.row(1)).squaredNorm();
+        double s = weights.row(i).sum();
+        weights.row(i) /= s;
+    }
+    Eigen::MatrixXd LBS;
+    igl::lbs_matrix(V, weights, LBS);
+    std::cout << "LBS: " <<  LBS.rows() << ", " << LBS.cols() << "\n";
 
-    // create "direction" vector for each vertex
-    // to displace them along disp_axis based on how far they are along query_axis
-    Eigen::VectorXd disp = Eigen::VectorXd::Zero(n * 3);
-    int query_axis = 2;
-    int disp_axis = 1;
-    double min_coord = V(0, query_axis);
-    for (int i = 0; i < n; i++) {
-        if (V(i, query_axis) < min_coord)
-            min_coord = V(i, query_axis);
+    // calculate rig jacobian
+    Eigen::MatrixXd J;
+    lbs_rig_jacobian(V, weights, J);
+
+    int num_frames = 48 * 2;
+
+    // create bone transformations matrices for each frame of animation
+    std::vector<Eigen::MatrixXd> T_list;
+    for (int i = 0; i < num_frames; i++) {
+        Eigen::Matrix34d T1, T2;
+        double t = (double) i / num_frames;
+        double angle = abs(M_PI / 3 * (0.5 - t));
+        T1 << 1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, t;
+        T2 << cos(angle), -sin(angle), 0, 0,
+                sin(angle), cos(angle), 0, 0,
+                0, 0, 1, t;
+        Eigen::Matrix<double, 8, 3> T_curr;
+        T_curr.block<4, 3>(0, 0) = T1.transpose();
+        T_curr.block<4, 3>(4, 0) = T2.transpose();
+        T_list.emplace_back(T_curr);
     }
-    // points that are further on query_axis get displaced more
-    for (int i = 0; i < n; i++) {
-        disp(i * 3 + disp_axis) = V(i, query_axis) - min_coord;
-    }
-    J.col(1) = b0 + disp * 2;
-    J.col(2) = b0;
-    J.col(3) = b0 + disp;
 
     Eigen::VectorXd u_prev_prev = Eigen::VectorXd::Zero(n * 3);
     Eigen::VectorXd u_prev = Eigen::VectorXd::Zero(n * 3);
@@ -80,33 +96,22 @@ int main(int argc, char *argv[]) {
     // view animation
     bool only_visualize_complementary = false;
     int frame = 0;
-    int num_frames = 48;
 
     igl::opengl::glfw::Viewer viewer;
     viewer.callback_pre_draw = [&](igl::opengl::glfw::Viewer &) -> bool {
         if (viewer.core().is_animating) {
-            // get rig deformation using blend shapes
-            Eigen::Vector4d mix;
-            double t = frame * 3. / num_frames;
-            std::cout << "t " << t << "\n";
-            // animation blends from 0 to 1, then 1 to 2, then 2 to 3
-            if (t < 1)
-                mix << 1 - t, t, 0, 0;
-            else if (t < 2)
-                mix << 0, 1 - (t - 1), t - 1, 0;
-            else
-                mix << 0, 0, 1 - (t - 2), t - 2;
-
-            // rig displacement is current blend shape minus rest shape
-            Eigen::VectorXd ur = J * mix - flatten(V);
+            // current transformation
+            Eigen::MatrixXd T_curr = T_list[frame];
+            // get rig deformation using linear blend skinning
+            Eigen::MatrixXd ur = flatten(LBS * T_curr - V);
 
             // apply external impulse to certain vertices at beginning of animation
             Eigen::VectorXd ft = Eigen::VectorXd::Zero(n * 3);
             std::list<int> vertices{300};
-            double f0 = 10000;
-            if (t == 0) {
+            double f0 = 2000;
+            if (frame == 0) {
                 for (int v: vertices) {
-                    ft(v * 3 + disp_axis) = f0;
+                    ft(v * 3 + 0) = f0;
                 }
             }
 
@@ -117,10 +122,11 @@ int main(int argc, char *argv[]) {
             u_prev = ur + uc;
             du_prev = (u_prev - u_prev_prev) / dt;
             std::cout << "||uc||²: " << uc.squaredNorm() << "\n";
+            std::cout << "||ur + uc||²: " << (ur + uc).squaredNorm() << "\n";
             if (only_visualize_complementary)
-                viewer.data().set_vertices(V + unflatten(uc, 3));
+                viewer.data(0).set_vertices(V + unflatten(uc, 3));
             else
-                viewer.data().set_vertices(V + unflatten(ur + uc, 3));
+                viewer.data(0).set_vertices(V + unflatten(ur + uc, 3));
 
             frame++;
             if (frame == num_frames) {
@@ -150,9 +156,16 @@ int main(int argc, char *argv[]) {
 
     viewer.core().is_animating = false;
     viewer.core().animation_max_fps = 16.;
-    viewer.data().show_lines = false;
-    viewer.data().show_overlay_depth = false;
-    viewer.data().set_mesh(V, F);
+    viewer.data(0).show_lines = false;
+//    viewer.data(0).show_faces = false;
+    viewer.data(0).show_overlay_depth = false;
+    viewer.data(0).set_mesh(V, F);
+    viewer.append_mesh();
+    Eigen::MatrixXd p(2, 3);
+    p << 3, 2, -3,
+            3, 0, 1;
+    Eigen::MatrixXd c = Eigen::MatrixXd::Ones(2, 3);
+    viewer.data(1).set_points(p, c);
 
     viewer.launch();
 
